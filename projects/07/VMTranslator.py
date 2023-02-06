@@ -1,6 +1,6 @@
 import sys
+from pathlib import Path
 from enum import IntEnum, auto
-
 
 class CommandType(IntEnum):
     C_ARITHMETIC = auto() # Arithmetic and Logical commands
@@ -14,11 +14,12 @@ class CommandType(IntEnum):
     C_RETURN     = auto() # Function returns
 
 
-# Iterates over every VM command in the file and breaks each one down
+# Iterates over every VM command in the given VM file and breaks each one down
 # into their fields.
 class Parser:
-    def __init__(self, filename):
-        self.file = open(filename)
+    def __init__(self, file):
+        self.filepath = file
+        self.file = file.open()
     
     # Gets the next VM command in the file, sets up variables, and returns
     # True. If no more commands are found, it returns False.
@@ -66,12 +67,12 @@ class Parser:
 
 
 # Translates each VM command into multiple assembly commands that executes the
-# expected behavior and adds them to an output file.
+# expected behavior and adds them to the given output file.
 class Translator:
-    def __init__(self, filename):
-        # Filename, without extension.
-        self.filename = filename.split('.')[0].split('/')[-1]
-        self.file = open(filename, 'w')
+    def __init__(self, file):
+        self.file = file.open('w')
+        # Filename, without extension. Used for 
+        self.filename = file.stem
         # Used in writeArithmetic() as a unique counter for logical operations
         self.count = 0
 
@@ -93,31 +94,24 @@ class Translator:
     def writeArithmetic(self, command):
         self.file.write(f'// {command}\n')
 
-        # Pops the argument(s) from the stack: R13=arg1 and R14=arg2
+        # Pop the argument(s) from the stack: R13=arg1 and R14=arg2
         numOfArgs = Translator.C_ARITHMETIC_DESC[command][0]
-        if numOfArgs == 2: # 2 Arguments
+        if numOfArgs == 2:
             self.file.write('@SP\n')
             self.file.write('AM=M-1\n')
             self.file.write('D=M\n')
             self.file.write('@R14\n')
             self.file.write('M=D\n')
-
-            self.file.write('@SP\n')
-            self.file.write('AM=M-1\n')
-            self.file.write('D=M\n')
-            self.file.write('@R13\n')
-            self.file.write('M=D\n')
-        else: # 1 Argument
-            self.file.write('@SP\n')
-            self.file.write('AM=M-1\n')
-            self.file.write('D=M\n')
-            self.file.write('@R13\n')
-            self.file.write('M=D\n')
+        self.file.write('@SP\n')
+        self.file.write('AM=M-1\n')
+        self.file.write('D=M\n')
+        self.file.write('@R13\n')
+        self.file.write('M=D\n')
 
         # D = f(arguments)
         cType = Translator.C_ARITHMETIC_DESC[command][1]
         code = Translator.C_ARITHMETIC_DESC[command][2]
-        if numOfArgs == 1: # Unary commands
+        if numOfArgs == 1: # Unary commands: 'neg' and 'not'
             self.file.write('@R13\n')
             self.file.write('D=M\n')
             self.file.write(f'D={code}D\n')
@@ -154,7 +148,7 @@ class Translator:
         self.file.write('M=M+1\n')
     
     # Translates push commands.
-    def writePush(self, segment, index):
+    def writePush(self, segment, index, sourcefile):
         self.file.write(f'// push {segment} {index}\n')
 
         # D = *(Segment+Index)
@@ -185,8 +179,8 @@ class Translator:
         elif segment == 'constant': # D = constant
             self.file.write(f'@{int(index)}\n')
             self.file.write('D=A\n')
-        elif segment == 'static': # D = *(filename.Index)
-            self.file.write(f'@{self.filename}.{index}\n')
+        elif segment == 'static': # D = *(sourcefilename.Index)
+            self.file.write(f'@{sourcefile.stem}.{index}\n')
             self.file.write('D=M\n')
         elif segment == 'pointer': # D = *(3+Index)
             self.file.write(f'@{3 + int(index)}\n')
@@ -207,7 +201,7 @@ class Translator:
         self.file.write('M=M+1\n')
         
     # Translates pop commands.
-    def writePop(self, segment, index):
+    def writePop(self, segment, index, sourcefile):
         self.file.write(f'// pop {segment} {index}\n')
 
         # R13 = Segment + Index
@@ -239,8 +233,8 @@ class Translator:
             self.file.write('D=D+A\n')
             self.file.write('@R13\n')
             self.file.write('M=D\n')
-        elif segment == 'static': # D = filename.Index
-            self.file.write(f'@{self.filename}.{index}\n')
+        elif segment == 'static': # D = sourcefilename.Index
+            self.file.write(f'@{sourcefile.stem}.{index}\n')
             self.file.write('D=A\n')
             self.file.write('@R13\n')
             self.file.write('M=D\n')
@@ -271,25 +265,74 @@ class Translator:
         self.file.close()
 
 
-# Description: Translates the given VM file into Hack assembly file.
-# Usage: python VMTranslator.py <VMfile.vm>
-# Output: VMfile.asm
+# Description: Translates the given VM file(s) into a Hack assembly file.
+# Input: [{file}.vm|{directory}]
+# Output: [{file}.asm|{directory}.asm]
 def main():
-    inputFilename = sys.argv[1]
-    outputFilename = inputFilename.split('.')[0] + '.asm'
-    p = Parser(inputFilename)
-    t = Translator(outputFilename)
+    # Invalid number of arguments given.
+    if len(sys.argv) != 2:
+        print('Usage: python ' + Path(__file__).name
+            + ' [{file}.vm|{directory}]')
+        return
 
-    # This is where the translation happens.
-    while p.advance():
-        if p.commandType == CommandType.C_ARITHMETIC:
-            t.writeArithmetic(p.command)
-        elif p.commandType == CommandType.C_PUSH:
-            t.writePush(p.arg1, p.arg2)
-        elif p.commandType == CommandType.C_POP:
-            t.writePop(p.arg1, p.arg2)
-        else:
-            raise Exception("Invalid command type is given by the parser!")
+    # Input given, must be a file or a directory.
+    input = Path(sys.argv[1])
+    if not input.exists():
+        print('File or directory does not exist!')
+        return
+    
+    if input.is_file(): # Input is a file.
+        # The extension must be .vm
+        if input.suffix != '.vm':
+            print('The file is not an VM file!')
+            return
+
+        # Initialize Parser for the input file
+        # and Translator for the output file.
+        p = Parser(input)
+        output = input.with_suffix('.asm')
+        t = Translator(output)
+        
+        # The translation process.
+        while p.advance():
+            if p.commandType == CommandType.C_ARITHMETIC:
+                t.writeArithmetic(p.command)
+            elif p.commandType == CommandType.C_PUSH:
+                t.writePush(p.arg1, p.arg2, p.filepath)
+            elif p.commandType == CommandType.C_POP:
+                t.writePop(p.arg1, p.arg2, p.filepath)
+            else:
+                raise Exception("Invalid command type is given by the parser!")
+        
+        return
+    else: # Input is a directory.
+        # At least 1 VM file must exist in the directory.
+        vmfiles = sorted(input.glob('*.vm'))
+        if len(vmfiles) < 1:
+            print('No VM file exists in the directory!')
+            return
+        
+        # Initialize Parsers for the input files.
+        parsers = []
+        for vmfile in vmfiles:
+            parsers.append(Parser(vmfile))
+        
+        # Initialize Translator for the output file.
+        output = input / (input.stem + '.asm')
+        t = Translator(output)
+
+        # The translation process.
+        for p in parsers:
+            while p.advance():
+                if p.commandType == CommandType.C_ARITHMETIC:
+                    t.writeArithmetic(p.command)
+                elif p.commandType == CommandType.C_PUSH:
+                    t.writePush(p.arg1, p.arg2, p.filepath)
+                elif p.commandType == CommandType.C_POP:
+                    t.writePop(p.arg1, p.arg2, p.filepath)
+                else:
+                    raise Exception(
+                        "Invalid command type is given by the parser!")
 
 
 if __name__ == '__main__':
